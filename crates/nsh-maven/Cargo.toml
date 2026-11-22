@@ -1,0 +1,25 @@
+[package]
+name = "nsh-maven"
+description = "Resolve Android libraries from Maven repositories and vendor them into Native Shell (NSH) apps and nshm crates"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords = ["nsh", "nshm", "android", "maven", "aar"]
+categories = ["command-line-utilities", "development-tools::build-utils"]
+
+[[bin]]
+name = "nsh-maven"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4.5", features = ["derive"] }
+quick-xml = "0.42"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha1 = "0.11"
+sha2 = "0.11"
+toml_edit = "0.22"
+ureq = "3"
