@@ -114,6 +114,12 @@ fn desktop_env(
 ) -> anyhow::Result<String> {
     use nsh_frameworks::desktop::Os;
     let mut dirs: Vec<String> = Vec::new();
+    // Linux libraries the executable asks for by a soname they are not
+    // named by (`libscanner.so.1` of `libscanner.so`) are linked so in a
+    // directory of their own.
+    let renamed = std::env::temp_dir()
+        .join("nsh-frameworks")
+        .join(target.triple());
     for library in nsh_frameworks::desktop::carried(frameworks, target)? {
         let dir = library
             .parent()
@@ -122,6 +128,9 @@ fn desktop_env(
             .to_string();
         if !dirs.contains(&dir) {
             dirs.push(dir);
+        }
+        if target.os == Os::Linux {
+            link_by_soname(&library, &renamed, &mut dirs)?;
         }
     }
     Ok(match target.os {
@@ -284,6 +293,37 @@ fn run() -> anyhow::Result<()> {
             }
         }
     }
+    Ok(())
+}
+
+/// Links `library` in `dir` by its soname when it is named otherwise, and
+/// adds `dir` to `dirs` then.
+#[cfg(unix)]
+fn link_by_soname(library: &Path, dir: &Path, dirs: &mut Vec<String>) -> anyhow::Result<()> {
+    let Ok(soname) = embed::run(
+        "patchelf",
+        &["--print-soname".as_ref(), library.as_os_str()],
+    ) else {
+        return Ok(());
+    };
+    let soname = soname.trim();
+    if soname.is_empty() || library.file_name().is_some_and(|n| n == soname) {
+        return Ok(());
+    }
+    std::fs::create_dir_all(dir)?;
+    let link = dir.join(soname);
+    let _ = std::fs::remove_file(&link);
+    std::os::unix::fs::symlink(library, &link)
+        .with_context(|| format!("link {} to {}", link.display(), library.display()))?;
+    let text = dir.display().to_string();
+    if !dirs.contains(&text) {
+        dirs.push(text);
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn link_by_soname(_: &Path, _: &Path, _: &mut Vec<String>) -> anyhow::Result<()> {
     Ok(())
 }
 

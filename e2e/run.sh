@@ -46,7 +46,8 @@ if [ $os = linux ]; then
   tar -tzf "out/$name.tar.gz" | grep -qx "$name/libscanner.so.1"
   [ "$(patchelf --print-rpath "$packaged")" = '$ORIGIN' ]
 else
-  tar -tf "out/$name.zip" | grep -qx "$name/scanner.dll"
+  # Windows' own tar reads zips; Git Bash's does not.
+  "$(cygpath "$SYSTEMROOT")/System32/tar.exe" -tf "out/$name.zip" | tr -d '\r' | grep -qx "$name/scanner.dll"
 fi
 
 # Where Cargo built it, `env` lets it find the library.
