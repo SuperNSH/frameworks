@@ -303,7 +303,10 @@ fn build_scripts_link_each_kind_of_library() {
         [
             format!(
                 "cargo:rustc-link-search=native={}",
-                analytics.join("ios-arm64/Analytics.framework").display()
+                analytics
+                    .join("ios-arm64")
+                    .join("Analytics.framework")
+                    .display()
             ),
             "cargo:rustc-link-lib=static:+whole-archive,+verbatim=Analytics".to_owned(),
         ]
