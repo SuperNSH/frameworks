@@ -87,8 +87,13 @@ fn value(json: &serde_json::Value) -> Value {
 pub fn declared(manifest: &Path, triples: &[String]) -> anyhow::Result<Vec<Framework>> {
     let platform = triples
         .iter()
-        .find_map(|t| Target::of_triple(t))
-        .map_or(Platform::Macos, |t| t.platform);
+        .find_map(|t| Platform::of_triple(t))
+        .with_context(|| {
+            format!(
+                "{} is not a target nsh-frameworks knows",
+                triples.join(", ")
+            )
+        })?;
     let mut args: Vec<&std::ffi::OsStr> = vec![
         "metadata".as_ref(),
         "--format-version".as_ref(),
@@ -454,9 +459,217 @@ pub fn embed_ipa(
     Ok(done)
 }
 
+/// What [`embed_desktop`] did.
+#[derive(Debug, Default)]
+pub struct EmbeddedDesktop {
+    pub libraries: Vec<PathBuf>,
+    pub rpath_added: bool,
+    pub archives: Vec<PathBuf>,
+    pub notes: Vec<String>,
+}
+
+/// The package directory a Linux or Windows `package` names: the
+/// directory itself, or the one its `.zip` / `.tar.gz` was made of.
+pub fn desktop_dir(package: &Path) -> PathBuf {
+    let text = package.to_string_lossy();
+    for suffix in [".tar.gz", ".zip"] {
+        if let Some(stem) = text.strip_suffix(suffix) {
+            return PathBuf::from(stem);
+        }
+    }
+    package.to_owned()
+}
+
+/// The executable of the Linux or Windows package directory `dir`
+/// (`<Name>` or `<Name>.exe`) and its target.
+pub fn desktop_executable(
+    dir: &Path,
+) -> anyhow::Result<(PathBuf, nsh_frameworks::desktop::DesktopTarget)> {
+    let name = dir
+        .file_name()
+        .with_context(|| format!("{} names no package", dir.display()))?
+        .to_string_lossy()
+        .into_owned();
+    for candidate in [dir.join(format!("{name}.exe")), dir.join(&name)] {
+        if !candidate.is_file() {
+            continue;
+        }
+        let mut head = Vec::new();
+        use std::io::Read as _;
+        std::fs::File::open(&candidate)?
+            .take(4096)
+            .read_to_end(&mut head)?;
+        let target = nsh_frameworks::desktop::executable_target(&head).with_context(|| {
+            format!(
+                "{} is not a Linux or Windows executable for x86_64 or aarch64",
+                candidate.display()
+            )
+        })?;
+        return Ok((candidate, target));
+    }
+    bail!(
+        "{} holds no executable {name} or {name}.exe: pass the directory `nsh package` wrote \
+         (.nsh/out/<Name>)",
+        dir.display()
+    )
+}
+
+/// Copies the shared libraries `carried` next to the executable of the
+/// Linux or Windows package directory `dir`, gives a Linux executable the
+/// rpath `$ORIGIN` to them, and makes again the archives `nsh package`
+/// made of the directory (`<Name>.tar.gz`, `<Name>.zip`, and the installer
+/// from `<Name>.iss` when Inno Setup is there).
+pub fn embed_desktop(
+    dir: &Path,
+    executable: &Path,
+    target: nsh_frameworks::desktop::DesktopTarget,
+    carried: &[PathBuf],
+) -> anyhow::Result<EmbeddedDesktop> {
+    use nsh_frameworks::desktop::Os;
+    let mut done = EmbeddedDesktop::default();
+    if carried.is_empty() {
+        return Ok(done);
+    }
+    for library in carried {
+        // The name the executable asks for: a Linux library's soname
+        // (`libscanner.so.1`), which a listed `libscanner.so` may not be.
+        let name = match target.os {
+            Os::Linux => run(
+                "patchelf",
+                &["--print-soname".as_ref(), library.as_os_str()],
+            )
+            .ok()
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty()),
+            Os::Windows => None,
+        };
+        let name = match name {
+            Some(name) => name,
+            None => library
+                .file_name()
+                .context("a library has a name")?
+                .to_string_lossy()
+                .into_owned(),
+        };
+        let dest = dir.join(&name);
+        std::fs::copy(library, &dest)
+            .with_context(|| format!("copy {} to {}", library.display(), dest.display()))?;
+        done.libraries.push(dest);
+    }
+    if target.os == Os::Linux {
+        let rpath = run(
+            "patchelf",
+            &["--print-rpath".as_ref(), executable.as_os_str()],
+        )
+        .context("nsh-frameworks needs patchelf for Linux packages (apt install patchelf)")?;
+        if !rpath.split(':').any(|p| p.trim() == "$ORIGIN") {
+            let current = rpath.trim();
+            let new = if current.is_empty() {
+                "$ORIGIN".to_owned()
+            } else {
+                format!("$ORIGIN:{current}")
+            };
+            run(
+                "patchelf",
+                &["--set-rpath".as_ref(), new.as_ref(), executable.as_os_str()],
+            )?;
+            done.rpath_added = true;
+        }
+    }
+    let parent = dir.parent().unwrap_or(Path::new("."));
+    let name = dir.file_name().context("a package has a name")?;
+    let name_text = name.to_string_lossy().into_owned();
+    let tar = parent.join(format!("{name_text}.tar.gz"));
+    if target.os == Os::Linux && tar.is_file() {
+        std::fs::remove_file(&tar)?;
+        run(
+            "tar",
+            &[
+                "-czf".as_ref(),
+                tar.as_os_str(),
+                "-C".as_ref(),
+                parent.as_os_str(),
+                name,
+            ],
+        )?;
+        done.archives.push(tar);
+    }
+    let zip = parent.join(format!("{name_text}.zip"));
+    if target.os == Os::Windows && zip.is_file() {
+        std::fs::remove_file(&zip)?;
+        // Windows' own `tar` writes a zip for `-a` and a `.zip` name.
+        run(
+            "tar",
+            &[
+                "-a".as_ref(),
+                "-c".as_ref(),
+                "-f".as_ref(),
+                zip.as_os_str(),
+                "-C".as_ref(),
+                parent.as_os_str(),
+                name,
+            ],
+        )?;
+        done.archives.push(zip);
+    }
+    let script = parent.join(format!("{name_text}.iss"));
+    if target.os == Os::Windows && script.is_file() {
+        match find_iscc() {
+            Some(iscc) => {
+                let iscc = iscc.to_string_lossy().into_owned();
+                run(&iscc, &["/Qp".as_ref(), script.as_os_str()])?;
+                done.archives
+                    .push(parent.join(format!("{name_text}-setup.exe")));
+            }
+            None => done.notes.push(format!(
+                "{} installs the directory: compile it again with Inno Setup's ISCC.exe for an \
+                 installer with the libraries",
+                script.display()
+            )),
+        }
+    }
+    Ok(done)
+}
+
+/// Inno Setup's `ISCC.exe`: on `PATH`, else where its installer puts it.
+fn find_iscc() -> Option<PathBuf> {
+    let on_path = std::env::var_os("PATH").into_iter().flat_map(|p| {
+        std::env::split_paths(&p)
+            .map(|d| d.join("ISCC.exe"))
+            .collect::<Vec<_>>()
+    });
+    let installed = ["ProgramFiles(x86)", "ProgramFiles", "LOCALAPPDATA"]
+        .into_iter()
+        .filter_map(std::env::var_os)
+        .flat_map(|base| {
+            let base = PathBuf::from(base);
+            [
+                base.join("Inno Setup 6").join("ISCC.exe"),
+                base.join("Programs").join("Inno Setup 6").join("ISCC.exe"),
+            ]
+        });
+    on_path.chain(installed).find(|p| p.is_file())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn desktop_packages_are_named_by_their_directory_or_archive() {
+        assert_eq!(
+            desktop_dir(Path::new("out/Scanner.zip")),
+            Path::new("out/Scanner")
+        );
+        assert_eq!(
+            desktop_dir(Path::new("out/Scanner.tar.gz")),
+            Path::new("out/Scanner")
+        );
+        assert_eq!(
+            desktop_dir(Path::new("out/Scanner")),
+            Path::new("out/Scanner")
+        );
+    }
 
     #[test]
     fn mach_o_platforms_name_rust_targets() {

@@ -398,3 +398,243 @@ macos = ["apple/Scanner.xcframework", { path = "apple/Ads.xcframework", wholeArc
     assert!(declared(&manifest, Platform::Ios, "x").unwrap().is_empty());
     fs::remove_dir_all(&dir).unwrap();
 }
+
+mod desktop_tests {
+    use super::*;
+    use crate::desktop::{self, DesktopLibrary, DesktopTarget, Os};
+
+    fn listed_at(path: PathBuf, platform: &str, index: usize) -> Framework {
+        Framework {
+            path,
+            whole_archive: false,
+            listed: format!("scanner: [package.metadata.nsh-frameworks] `{platform}`[{index}]"),
+        }
+    }
+
+    #[test]
+    fn rust_triples_are_desktop_targets() {
+        let t = |triple: &str| DesktopTarget::of_triple(triple).map(|t| (t.os, t.arch));
+        assert_eq!(t("x86_64-unknown-linux-gnu"), Some((Os::Linux, "x86_64")));
+        assert_eq!(t("aarch64-unknown-linux-gnu"), Some((Os::Linux, "aarch64")));
+        assert_eq!(t("x86_64-pc-windows-msvc"), Some((Os::Windows, "x86_64")));
+        assert_eq!(t("aarch64-pc-windows-msvc"), Some((Os::Windows, "aarch64")));
+        assert_eq!(t("aarch64-apple-darwin"), None);
+        assert_eq!(t("aarch64-linux-android"), None);
+        assert_eq!(t("i686-pc-windows-msvc"), None);
+        assert_eq!(
+            Platform::of_triple("x86_64-unknown-linux-gnu"),
+            Some(Platform::Linux)
+        );
+        assert_eq!(
+            Platform::of_triple("aarch64-apple-ios-sim"),
+            Some(Platform::Ios)
+        );
+        assert_eq!(Platform::of_triple("wasm32-unknown-unknown"), None);
+        assert_eq!(
+            DesktopTarget::of_triple("aarch64-unknown-linux-gnu")
+                .unwrap()
+                .triple(),
+            "aarch64-unknown-linux-gnu"
+        );
+    }
+
+    #[test]
+    fn executables_tell_their_target() {
+        let mut elf = vec![0u8; 64];
+        elf[..4].copy_from_slice(b"\x7fELF");
+        elf[18..20].copy_from_slice(&62u16.to_le_bytes());
+        assert_eq!(
+            desktop::executable_target(&elf),
+            Some(DesktopTarget {
+                os: Os::Linux,
+                arch: "x86_64"
+            })
+        );
+        elf[18..20].copy_from_slice(&183u16.to_le_bytes());
+        assert_eq!(desktop::executable_target(&elf).unwrap().arch, "aarch64");
+        elf[18..20].copy_from_slice(&3u16.to_le_bytes());
+        assert_eq!(desktop::executable_target(&elf), None);
+
+        let mut pe = vec![0u8; 0x100];
+        pe[..2].copy_from_slice(b"MZ");
+        pe[0x3c..0x40].copy_from_slice(&0x80u32.to_le_bytes());
+        pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+        pe[0x84..0x86].copy_from_slice(&0x8664u16.to_le_bytes());
+        assert_eq!(
+            desktop::executable_target(&pe),
+            Some(DesktopTarget {
+                os: Os::Windows,
+                arch: "x86_64"
+            })
+        );
+        pe[0x84..0x86].copy_from_slice(&0xaa64u16.to_le_bytes());
+        assert_eq!(desktop::executable_target(&pe).unwrap().arch, "aarch64");
+        assert_eq!(desktop::executable_target(b"#!/bin/sh"), None);
+    }
+
+    #[test]
+    fn linux_libraries_link_and_shared_ones_are_carried() {
+        let dir = temp("linux");
+        let arch_dir = dir.join("vendor/x86_64");
+        fs::create_dir_all(&arch_dir).unwrap();
+        for file in [
+            "libscanner.so",
+            "libads.a",
+            "libcodec.so.2",
+            "Odd.a",
+            "readme.txt",
+        ] {
+            fs::write(arch_dir.join(file), b"").unwrap();
+        }
+        let linux = DesktopTarget::of_triple("x86_64-unknown-linux-gnu").unwrap();
+        let entry =
+            |file: &str, index| listed_at(dir.join("vendor/{arch}").join(file), "linux", index);
+        let list = [
+            entry("libscanner.so", 0),
+            Framework {
+                whole_archive: true,
+                ..entry("libads.a", 1)
+            },
+            entry("libcodec.so.2", 2),
+            entry("Odd.a", 3),
+        ];
+        let found: Vec<DesktopLibrary> = desktop::libraries(&list, linux)
+            .unwrap()
+            .into_iter()
+            .map(|(l, _)| l)
+            .collect();
+        assert_eq!(
+            found,
+            [
+                DesktopLibrary::Shared(arch_dir.join("libscanner.so")),
+                DesktopLibrary::Static(arch_dir.join("libads.a")),
+                DesktopLibrary::Shared(arch_dir.join("libcodec.so.2")),
+                DesktopLibrary::Static(arch_dir.join("Odd.a")),
+            ]
+        );
+        let lines = desktop::directives(&list, linux).unwrap();
+        let links: Vec<&str> = lines
+            .iter()
+            .map(String::as_str)
+            .filter(|l| l.starts_with("cargo:rustc-link-lib"))
+            .collect();
+        assert_eq!(
+            links,
+            [
+                "cargo:rustc-link-lib=dylib=scanner",
+                "cargo:rustc-link-lib=static:+whole-archive=ads",
+                "cargo:rustc-link-lib=dylib:+verbatim=libcodec.so.2",
+                "cargo:rustc-link-lib=static:+verbatim=Odd.a",
+            ]
+        );
+        assert!(lines.contains(&format!(
+            "cargo:rustc-link-search=native={}",
+            arch_dir.display()
+        )));
+        assert_eq!(
+            desktop::carried(&list, linux).unwrap(),
+            [
+                arch_dir.join("libscanner.so"),
+                arch_dir.join("libcodec.so.2")
+            ]
+        );
+        // Another processor's directory has none of them.
+        let arm = DesktopTarget::of_triple("aarch64-unknown-linux-gnu").unwrap();
+        let error = desktop::libraries(&list, arm).unwrap_err().to_string();
+        assert!(error.contains("vendor/aarch64"), "{error}");
+        // What is no library, and wholeArchive of a shared one, are refused.
+        let error = desktop::libraries(&[entry("readme.txt", 0)], linux)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("is not a static (`.a`) or shared (`.so`) library"),
+            "{error}"
+        );
+        let forced = Framework {
+            whole_archive: true,
+            ..entry("libscanner.so", 0)
+        };
+        assert!(desktop::libraries(&[forced], linux).is_err());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn windows_import_libraries_go_with_their_dlls() {
+        let dir = temp("windows");
+        for file in ["scanner.lib", "Scanner.dll", "codec.lib", "helper.dll"] {
+            fs::write(dir.join(file), b"").unwrap();
+        }
+        let windows = DesktopTarget::of_triple("x86_64-pc-windows-msvc").unwrap();
+        let entry = |file: &str, index| listed_at(dir.join(file), "windows", index);
+        let list = [
+            entry("scanner.lib", 0),
+            entry("Scanner.dll", 1),
+            entry("codec.lib", 2),
+            entry("helper.dll", 3),
+        ];
+        let found: Vec<DesktopLibrary> = desktop::libraries(&list, windows)
+            .unwrap()
+            .into_iter()
+            .map(|(l, _)| l)
+            .collect();
+        assert_eq!(
+            found,
+            [
+                DesktopLibrary::Import(dir.join("scanner.lib")),
+                DesktopLibrary::Runtime(dir.join("Scanner.dll")),
+                DesktopLibrary::Static(dir.join("codec.lib")),
+                DesktopLibrary::Runtime(dir.join("helper.dll")),
+            ]
+        );
+        let links: Vec<String> = desktop::directives(&list, windows)
+            .unwrap()
+            .into_iter()
+            .filter(|l| l.starts_with("cargo:rustc-link-lib"))
+            .collect();
+        assert_eq!(
+            links,
+            [
+                "cargo:rustc-link-lib=dylib=scanner",
+                "cargo:rustc-link-lib=static=codec",
+            ]
+        );
+        assert_eq!(
+            desktop::carried(&list, windows).unwrap(),
+            [dir.join("Scanner.dll"), dir.join("helper.dll")]
+        );
+        // Two DLLs of one name cannot both sit next to the executable.
+        fs::create_dir_all(dir.join("other")).unwrap();
+        fs::write(dir.join("other/helper.dll"), b"").unwrap();
+        let twice = [entry("helper.dll", 0), entry("other/helper.dll", 1)];
+        let error = desktop::carried(&twice, windows).unwrap_err().to_string();
+        assert!(error.contains("have one name"), "{error}");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn crates_list_linux_and_windows_libraries() {
+        let dir = temp("declared-desktop");
+        let manifest = dir.join("Cargo.toml");
+        fs::write(
+            &manifest,
+            "[package]\nname = \"scanner\"\n[package.metadata.nsh-frameworks]\n\
+             linux = [\"vendor/linux/{arch}/libscanner.so\"]\n\
+             windows = [\"vendor/windows/{arch}/scanner.lib\", \"vendor/windows/{arch}/scanner.dll\"]\n",
+        )
+        .unwrap();
+        let linux = declared(&manifest, Platform::Linux, "scanner").unwrap();
+        assert_eq!(linux[0].path, dir.join("vendor/linux/{arch}/libscanner.so"));
+        assert_eq!(
+            declared(&manifest, Platform::Windows, "scanner")
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(
+            declared(&manifest, Platform::Macos, "scanner")
+                .unwrap()
+                .is_empty()
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+}

@@ -1,0 +1,12 @@
+[package]
+name = "sdk"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[build-dependencies]
+nsh-frameworks = { path = "../../crates/nsh-frameworks", default-features = false }
+
+[package.metadata.nsh-frameworks]
+linux = ["vendor/{arch}/libscanner.so", "vendor/{arch}/libcodec.a"]
+windows = ["vendor/{arch}/scanner.lib", "vendor/{arch}/scanner.dll", "vendor/{arch}/codec.lib"]

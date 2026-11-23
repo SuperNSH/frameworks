@@ -13,7 +13,7 @@ use nsh_frameworks::Target;
 #[command(
     name = "nsh-frameworks",
     version,
-    about = "Prebuilt Apple frameworks for Native Shell (NSH) apps"
+    about = "Prebuilt native SDKs for Native Shell (NSH) apps: Apple frameworks, Linux and Windows libraries"
 )]
 struct Cli {
     /// The Cargo manifest of the app's crates. Default: `.nsh/rust/Cargo.toml`
@@ -27,11 +27,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Copy the dynamic frameworks the app's crates declare into a package
-    /// (`.app` or `.ipa`), add the rpath to them, and sign them and the app
-    /// again, keeping its entitlements.
+    /// Copy the dynamic frameworks or shared libraries the app's crates
+    /// declare into a package: an `.app` or `.ipa` (the rpath added, signed
+    /// again with its entitlements kept), or the directory `nsh package`
+    /// wrote for Linux or Windows (its `.tar.gz`, `.zip` and installer made
+    /// again).
     Embed {
-        /// The package `nsh package` made.
+        /// The package `nsh package` made: `.nsh/out/<Name>.app`,
+        /// `.nsh/out/<Name>.ipa`, `.nsh/out/<Name>`.
         package: PathBuf,
         /// The identity to sign with. Default: the one the package is
         /// signed with (ad hoc for simulator and macOS packages).
@@ -39,17 +42,18 @@ enum Command {
         sign: Option<String>,
     },
     /// Print the shell line that lets the programs `nsh` builds and runs
-    /// on this Mac (`nsh run`, and the describing program of `nsh package`
-    /// and `nsh test`) find the dynamic frameworks where they are:
-    /// `eval "$(nsh-frameworks env)"`.
+    /// on this machine (`nsh run`, and the describing program of `nsh
+    /// package` and `nsh test`) find the dynamic libraries where they are:
+    /// `eval "$(nsh-frameworks env)"`; on Windows, PowerShell's
+    /// `nsh-frameworks env | Invoke-Expression`.
     Env {
-        /// The Rust target `nsh run` builds for. Default: this Mac.
+        /// The Rust target `nsh run` builds for. Default: this machine.
         #[arg(long)]
         target: Option<String>,
     },
     /// List what each framework links for a target.
     List {
-        /// The Rust target. Default: this Mac.
+        /// The Rust target. Default: this machine.
         #[arg(long)]
         target: Option<String>,
     },
@@ -62,12 +66,75 @@ fn main() {
     }
 }
 
+/// The Rust target of this machine, as `nsh` builds for it.
 fn host_triple() -> &'static str {
-    if cfg!(target_arch = "aarch64") {
-        "aarch64-apple-darwin"
-    } else {
-        "x86_64-apple-darwin"
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => "aarch64-apple-darwin",
+        ("macos", _) => "x86_64-apple-darwin",
+        ("linux", "aarch64") => "aarch64-unknown-linux-gnu",
+        ("linux", _) => "x86_64-unknown-linux-gnu",
+        ("windows", "aarch64") => "aarch64-pc-windows-msvc",
+        _ => "x86_64-pc-windows-msvc",
     }
+}
+
+/// Embeds into the Linux or Windows package `package`.
+fn embed_desktop(package: &Path, manifest: &Path) -> anyhow::Result<()> {
+    let dir = embed::desktop_dir(package);
+    let (executable, target) = embed::desktop_executable(&dir)?;
+    let frameworks = embed::declared(manifest, &[target.triple()])?;
+    let carried = nsh_frameworks::desktop::carried(&frameworks, target)?;
+    let done = embed::embed_desktop(&dir, &executable, target, &carried)?;
+    if done.libraries.is_empty() {
+        println!(
+            "{}: the app's crates declare no shared libraries for it; nothing to embed",
+            dir.display()
+        );
+        return Ok(());
+    }
+    for library in &done.libraries {
+        println!("embedded {}", library.display());
+    }
+    if done.rpath_added {
+        println!("set the executable's rpath to $ORIGIN");
+    }
+    for archive in &done.archives {
+        println!("made {} again", archive.display());
+    }
+    for note in &done.notes {
+        println!("note: {note}");
+    }
+    Ok(())
+}
+
+/// The shell line of `env` for a Linux or Windows `target`.
+fn desktop_env(
+    frameworks: &[nsh_frameworks::Framework],
+    target: nsh_frameworks::desktop::DesktopTarget,
+) -> anyhow::Result<String> {
+    use nsh_frameworks::desktop::Os;
+    let mut dirs: Vec<String> = Vec::new();
+    for library in nsh_frameworks::desktop::carried(frameworks, target)? {
+        let dir = library
+            .parent()
+            .context("a library is in a directory")?
+            .display()
+            .to_string();
+        if !dirs.contains(&dir) {
+            dirs.push(dir);
+        }
+    }
+    Ok(match target.os {
+        Os::Linux => format!(
+            "export LD_LIBRARY_PATH={}\"${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}\"",
+            shell_quote(&dirs.join(":"))
+        ),
+        // PowerShell, Windows' shell.
+        Os::Windows => format!(
+            "$env:PATH = '{};' + $env:PATH",
+            dirs.join(";").replace('\'', "''")
+        ),
+    })
 }
 
 fn run() -> anyhow::Result<()> {
@@ -79,6 +146,12 @@ fn run() -> anyhow::Result<()> {
     match &cli.command {
         Command::Embed { package, sign } => {
             let manifest = manifest(&cli.manifest_path)?;
+            let apple = package
+                .extension()
+                .is_some_and(|e| e == "app" || e == "ipa");
+            if !apple {
+                return embed_desktop(package, &manifest);
+            }
             let ipa = package.extension().is_some_and(|e| e == "ipa");
             let app = if ipa {
                 None
@@ -122,9 +195,13 @@ fn run() -> anyhow::Result<()> {
         }
         Command::Env { target } => {
             let triple = target.as_deref().unwrap_or(host_triple());
-            let target = Target::of_triple(triple)
-                .with_context(|| format!("{triple} is not an iOS or macOS target"))?;
             let frameworks = embed::declared(&manifest(&cli.manifest_path)?, &[triple.into()])?;
+            if let Some(desktop) = nsh_frameworks::desktop::DesktopTarget::of_triple(triple) {
+                println!("{}", desktop_env(&frameworks, desktop)?);
+                return Ok(());
+            }
+            let target = Target::of_triple(triple)
+                .with_context(|| format!("{triple} is not a target nsh-frameworks knows"))?;
             let mut dirs: Vec<String> = Vec::new();
             for framework in &frameworks {
                 if let Some(bundle) = framework.library(target)?.dynamic_bundle() {
@@ -158,9 +235,31 @@ fn run() -> anyhow::Result<()> {
         }
         Command::List { target } => {
             let triple = target.as_deref().unwrap_or(host_triple());
-            let target = Target::of_triple(triple)
-                .with_context(|| format!("{triple} is not an iOS or macOS target"))?;
             let frameworks = embed::declared(&manifest(&cli.manifest_path)?, &[triple.into()])?;
+            if let Some(desktop) = nsh_frameworks::desktop::DesktopTarget::of_triple(triple) {
+                use nsh_frameworks::desktop::DesktopLibrary;
+                if frameworks.is_empty() {
+                    println!("the app's crates declare no libraries for {triple}");
+                }
+                for (library, framework) in
+                    nsh_frameworks::desktop::libraries(&frameworks, desktop)?
+                {
+                    let kind = match library {
+                        DesktopLibrary::Static(_) => "static library",
+                        DesktopLibrary::Shared(_) => "shared library, embedded",
+                        DesktopLibrary::Import(_) => "import library",
+                        DesktopLibrary::Runtime(_) => "DLL, embedded",
+                    };
+                    println!(
+                        "{}\n  ({kind})\n  listed by {}",
+                        library.path().display(),
+                        framework.listed
+                    );
+                }
+                return Ok(());
+            }
+            let target = Target::of_triple(triple)
+                .with_context(|| format!("{triple} is not a target nsh-frameworks knows"))?;
             if frameworks.is_empty() {
                 println!(
                     "the app's crates declare no frameworks for {}",

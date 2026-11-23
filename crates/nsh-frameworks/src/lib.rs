@@ -1,13 +1,16 @@
-//! Prebuilt Apple frameworks for Native Shell (NSH) apps, linked from an
-//! nshm crate's build script and embedded into app packages.
+//! Prebuilt native SDKs for Native Shell (NSH) apps, linked from an nshm
+//! crate's build script and carried in app packages: Apple frameworks
+//! (`.xcframework`, `.framework`) on iOS and macOS, libraries on Linux and
+//! Windows ([`desktop`]).
 //!
-//! A crate lists its `.xcframework`s (or `.framework`s) once, in its
-//! `Cargo.toml`, relative to the crate:
+//! A crate lists them once, in its `Cargo.toml`, relative to the crate:
 //!
 //! ```toml
 //! [package.metadata.nsh-frameworks]
 //! ios = ["apple/Scanner.xcframework"]
 //! macos = ["apple/Scanner.xcframework", { path = "apple/Ads.xcframework", wholeArchive = true }]
+//! linux = ["vendor/linux/{arch}/libscanner.so"]
+//! windows = ["vendor/windows/{arch}/scanner.lib", "vendor/windows/{arch}/scanner.dll"]
 //! ```
 //!
 //! and links them from its `build.rs` ([`link_declared`]):
@@ -25,10 +28,10 @@
 //! everywhere. Each build takes the XCFramework library of its target
 //! ([`Framework::library`]).
 //!
-//! A static library becomes part of the executable. A dynamic framework is
-//! linked against, and the app needs a copy of it at run time: the
-//! `nsh-frameworks embed` command copies it into the package NSH made and
-//! signs it ([`embed`](https://github.com/SuperNSH/frameworks#embed)).
+//! A static library becomes part of the executable. A dynamic framework,
+//! `.so` or `.dll` is linked against, and the app needs a copy of it at run
+//! time: the `nsh-frameworks embed` command copies it into the package NSH
+//! made ([`embed`](https://github.com/SuperNSH/frameworks#use)).
 
 // The example is a build script's `main`, written out as one.
 #![allow(clippy::needless_doctest_main)]
@@ -40,6 +43,8 @@ use std::{
 };
 
 use anyhow::{Context as _, bail};
+
+pub mod desktop;
 
 /// The table of a crate's `Cargo.toml` this crate reads.
 pub const METADATA_KEY: &str = "nsh-frameworks";
@@ -60,16 +65,39 @@ pub struct Target {
 pub enum Platform {
     Ios,
     Macos,
+    Linux,
+    Windows,
 }
 
 impl Platform {
-    /// Its key in `[package.metadata.nsh-frameworks]` and in an
-    /// XCFramework's `Info.plist`.
+    /// Every one, in the order errors name them.
+    pub const ALL: [Platform; 4] = [
+        Platform::Ios,
+        Platform::Macos,
+        Platform::Linux,
+        Platform::Windows,
+    ];
+
+    /// Its key in `[package.metadata.nsh-frameworks]` (and, for Apple's, in
+    /// an XCFramework's `Info.plist`).
     pub fn key(self) -> &'static str {
         match self {
             Platform::Ios => "ios",
             Platform::Macos => "macos",
+            Platform::Linux => "linux",
+            Platform::Windows => "windows",
         }
+    }
+
+    /// The platform of a Rust `triple`, if it is one of these.
+    pub fn of_triple(triple: &str) -> Option<Platform> {
+        if let Some(target) = Target::of_triple(triple) {
+            return Some(target.platform);
+        }
+        desktop::DesktopTarget::of_triple(triple).map(|t| match t.os {
+            desktop::Os::Linux => Platform::Linux,
+            desktop::Os::Windows => Platform::Windows,
+        })
     }
 }
 
@@ -452,8 +480,11 @@ pub fn frameworks_of(
         bail!("{at} is a table");
     };
     for (key, _) in table {
-        if key != "ios" && key != "macos" {
-            bail!("{at}: `{key}` is not something nsh-frameworks reads (`ios`, `macos`)");
+        if !Platform::ALL.iter().any(|p| p.key() == key) {
+            bail!(
+                "{at}: `{key}` is not something nsh-frameworks reads (`ios`, `macos`, `linux`, \
+                 `windows`)"
+            );
         }
     }
     let Some(list) = table
@@ -573,41 +604,46 @@ pub fn link_declared() -> anyhow::Result<()> {
     );
     let manifest = dir.join("Cargo.toml");
     println!("cargo:rerun-if-changed={}", manifest.display());
-    let Some(target) = build_target()? else {
+    let triple = std::env::var("TARGET").context("not run by Cargo: no TARGET")?;
+    let Some(platform) = Platform::of_triple(&triple) else {
         return Ok(());
     };
     let name = std::env::var("CARGO_PKG_NAME").unwrap_or_else(|_| "the crate".into());
-    let frameworks = declared(&manifest, target.platform, &name)?;
-    for line in directives(&frameworks, target)? {
+    let frameworks = declared(&manifest, platform, &name)?;
+    for line in directives_for(&frameworks, &triple)? {
         println!("{line}");
     }
     Ok(())
 }
 
-/// Links the framework at `path` (relative to the crate) for the target
-/// Cargo builds, if it is an iOS or macOS one: [`link_declared`] without
-/// the `Cargo.toml` list, for a build script that chooses itself.
-/// `nsh-frameworks embed` finds only the frameworks a crate declares.
+/// The directives that link `frameworks` (listed for the platform of
+/// `triple`) for `triple`.
+pub fn directives_for(frameworks: &[Framework], triple: &str) -> anyhow::Result<Vec<String>> {
+    if let Some(target) = Target::of_triple(triple) {
+        return directives(frameworks, target);
+    }
+    match desktop::DesktopTarget::of_triple(triple) {
+        Some(target) => desktop::directives(frameworks, target),
+        None => Ok(Vec::new()),
+    }
+}
+
+/// Links the framework or library at `path` (relative to the crate) for
+/// the target Cargo builds, if it is one this crate knows: [`link_declared`]
+/// without the `Cargo.toml` list, for a build script that chooses itself.
+/// `nsh-frameworks embed` finds only what a crate declares.
 pub fn link(path: impl AsRef<Path>, whole_archive: bool) -> anyhow::Result<()> {
-    let Some(target) = build_target()? else {
-        return Ok(());
-    };
+    let triple = std::env::var("TARGET").context("not run by Cargo: no TARGET")?;
     let dir = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap_or_default());
     let framework = Framework {
         path: dir.join(path.as_ref()),
         whole_archive,
         listed: format!("build.rs `{}`", path.as_ref().display()),
     };
-    for line in framework.directives(target)? {
+    for line in directives_for(std::slice::from_ref(&framework), &triple)? {
         println!("{line}");
     }
     Ok(())
-}
-
-/// The Apple target of the build Cargo runs this build script for.
-fn build_target() -> anyhow::Result<Option<Target>> {
-    let triple = std::env::var("TARGET").context("not run by Cargo: no TARGET")?;
-    Ok(Target::of_triple(&triple))
 }
 
 #[cfg(test)]

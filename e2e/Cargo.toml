@@ -1,0 +1,5 @@
+# The end-to-end check (`e2e/run.sh`): an nshm-like crate linking a shared
+# and a static C library, and an app using it. Not part of the workspace.
+[workspace]
+members = ["sdk", "app"]
+resolver = "3"
