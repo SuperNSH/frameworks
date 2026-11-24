@@ -23,7 +23,7 @@ Not yet run against the live Google Maven repository and Maven Central end to en
 ## Install
 
 ```sh
-cargo install --git https://github.com/SuperNSH/maven nsh-maven
+cargo install nsh-maven
 ```
 
 ## Use
