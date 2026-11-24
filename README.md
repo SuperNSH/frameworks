@@ -21,7 +21,13 @@ Not yet checked: device packages signed with an identity, `.ipa` files, `nsh run
 ## Install
 
 ```sh
-cargo install --git https://github.com/SuperNSH/frameworks nsh-frameworks
+cargo install nsh-frameworks
+```
+
+The library, for a build script:
+
+```sh
+cargo add --build nsh-frameworks --no-default-features
 ```
 
 ## Use
@@ -34,7 +40,7 @@ ios = ["apple/Scanner.xcframework"]
 macos = ["apple/Scanner.xcframework", { path = "apple/Ads.xcframework", wholeArchive = true }]
 
 [build-dependencies]
-nsh-frameworks = { git = "https://github.com/SuperNSH/frameworks", default-features = false }
+nsh-frameworks = { version = "0.1", default-features = false }
 ```
 
 and link them from `build.rs`:
