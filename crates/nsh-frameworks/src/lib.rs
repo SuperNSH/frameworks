@@ -1,3 +1,6 @@
+//! **Moved to [`nsh-native-deps`](https://crates.io/crates/nsh-native-deps)**, which gets the
+//! releases from now on.
+//!
 //! Prebuilt native SDKs for Native Shell (NSH) apps, linked from an nshm
 //! crate's build script and carried in app packages: Apple frameworks
 //! (`.xcframework`, `.framework`) on iOS and macOS, libraries on Linux and

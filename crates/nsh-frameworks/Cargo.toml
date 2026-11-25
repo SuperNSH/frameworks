@@ -1,6 +1,6 @@
 [package]
 name = "nsh-frameworks"
-description = "Link prebuilt Apple frameworks (XCFrameworks) from nshm crates and embed the dynamic ones into Native Shell (NSH) app packages"
+description = "Moved to nsh-native-deps. Links prebuilt native SDKs into Native Shell (NSH) apps"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

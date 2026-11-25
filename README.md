@@ -1,5 +1,7 @@
 # nsh-frameworks
 
+> **Moved.** This crate is now [`nsh-native-deps`](https://crates.io/crates/nsh-native-deps), which also covers Android. It gets no more releases here. To switch: depend on `nsh-native-deps`, call `nsh_native_deps::link_declared()`, rename the table to `[package.metadata.nsh-native-deps]`, and run `nsh-native-deps` in place of `nsh-frameworks`. Source: https://github.com/SuperNSH/native-deps
+
 Prebuilt native SDKs for Native Shell (NSH) apps, linked from an nshm crate and carried in the app's packages: Apple frameworks (`.xcframework`, `.framework`) on iOS and macOS, libraries (`.so`, `.a`, `.dll`, `.lib`) on Linux and Windows.
 
 NSH links what a crate's build script asks for, so an nshm that wraps an SDK links it from its own `build.rs` ([NSH's guide](https://github.com/longbridge/nsh/blob/main/website/docs/nshm.md)). `nsh-frameworks` does that from one list in the crate's `Cargo.toml`, picking each target's library. After `nsh package` it copies the SDK's dynamic libraries into the package (and signs them, on Apple's platforms), which a build script cannot do. NSH itself is unchanged.
