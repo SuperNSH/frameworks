@@ -1,6 +1,8 @@
 //! `nsh-native-deps`: embeds the dynamic frameworks an app's crates declare
-//! into the package NSH made, and lists what each target links.
+//! into the package NSH made, lists what each target links, and vendors
+//! Android libraries.
 
+mod android;
 mod embed;
 
 use std::path::{Path, PathBuf};
@@ -13,7 +15,7 @@ use nsh_native_deps::Target;
 #[command(
     name = "nsh-native-deps",
     version,
-    about = "Prebuilt native SDKs for Native Shell (NSH) apps: Apple frameworks, Linux and Windows libraries"
+    about = "Native dependencies of Native Shell (NSH) apps: Apple frameworks, Linux and Windows libraries, Android libraries"
 )]
 struct Cli {
     /// The Cargo manifest of the app's crates. Default: `.nsh/rust/Cargo.toml`
@@ -57,6 +59,12 @@ enum Command {
         #[arg(long)]
         target: Option<String>,
     },
+    /// Resolve Android libraries from Maven repositories, with their
+    /// dependencies, as Gradle does, and vendor them into an NSH app
+    /// (`nsh.json` `android.libraries`) or nshm crate (`Cargo.toml`
+    /// `[package.metadata.nsh.android] libraries`). `nsh package` then
+    /// reads local files only.
+    Android(android::Args),
 }
 
 fn main() {
@@ -153,6 +161,13 @@ fn run() -> anyhow::Result<()> {
         None => embed::default_manifest(Path::new(".")),
     };
     match &cli.command {
+        Command::Android(args) => {
+            anyhow::ensure!(
+                cli.manifest_path.is_none(),
+                "`android` takes `--dir`, not `--manifest-path`"
+            );
+            android::run(args)?;
+        }
         Command::Embed { package, sign } => {
             let manifest = manifest(&cli.manifest_path)?;
             let apple = package

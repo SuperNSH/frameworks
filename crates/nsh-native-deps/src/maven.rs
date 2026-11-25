@@ -42,13 +42,15 @@ use anyhow::{Context as _, bail};
 use quick_xml::events::Event;
 use serde_json::{Value, json};
 
+use crate::{ANDROID_KEY, METADATA_KEY};
+
 /// The repositories searched, in order, when none are given.
 pub const DEFAULT_REPOSITORIES: &[&str] = &[
     "https://dl.google.com/dl/android/maven2",
     "https://repo.maven.apache.org/maven2",
 ];
 
-/// Where `nsh maven` keeps the files, relative to the app's `nsh.json`.
+/// Where `nsh-native-deps android` keeps the files, relative to the app's `nsh.json`.
 pub const VENDOR_DIR: &str = "android/maven";
 
 /// A module: group and artifact.
@@ -1230,10 +1232,44 @@ impl Target {
         let path = self.dir().join(VENDOR_DIR).join("maven.json");
         match fs::read(&path) {
             Ok(bytes) => serde_json::from_slice(&bytes)
-                .with_context(|| format!("{} is not what nsh-maven writes", path.display())),
+                .with_context(|| format!("{} is not what nsh-native-deps writes", path.display())),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Record::default()),
             Err(e) => Err(e).with_context(|| format!("read {}", path.display())),
         }
+    }
+
+    /// The libraries asked for: a crate's `[package.metadata.nsh-native-deps]`
+    /// `android` list, when it has one; else those `record` holds.
+    pub fn wanted(&self, record: &Record) -> anyhow::Result<Vec<Coordinate>> {
+        if let Target::Crate(dir) = self {
+            let path = dir.join("Cargo.toml");
+            let text =
+                fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+            let doc: toml_edit::DocumentMut = text
+                .parse()
+                .with_context(|| format!("{} is not TOML", path.display()))?;
+            let mut item = Some(doc.as_item());
+            for key in ["package", "metadata", METADATA_KEY, ANDROID_KEY] {
+                item = item.and_then(|i| i.get(key));
+            }
+            if let Some(item) = item {
+                let at = format!("[package.metadata.{METADATA_KEY}] `{ANDROID_KEY}`");
+                let list = item
+                    .as_array()
+                    .with_context(|| format!("{}: {at} is not a list", path.display()))?;
+                return list
+                    .iter()
+                    .map(|v| {
+                        v.as_str()
+                            .with_context(|| {
+                                format!("{}: {at}: {v} is not a string", path.display())
+                            })?
+                            .parse()
+                    })
+                    .collect();
+            }
+        }
+        record.libraries.iter().map(|l| l.parse()).collect()
     }
 }
 
@@ -1275,7 +1311,7 @@ pub fn vendor(
     let dir = root.join(VENDOR_DIR);
     let old = target.record().unwrap_or_default();
     // Into a fresh directory first, so a failed download changes nothing.
-    let staging = root.join(".nsh-maven-staging");
+    let staging = root.join(".nsh-native-deps-staging");
     let _ = fs::remove_dir_all(&staging);
     let mut warnings = Vec::new();
     let files = match download(source, &resolved, &staging, &mut warnings) {
@@ -1319,7 +1355,7 @@ pub fn vendor(
     let paths: Vec<&str> = record.resolved.iter().map(|f| f.path.as_str()).collect();
     match target {
         Target::App(d) => list_in_nsh_json(d, &ours, &paths)?,
-        Target::Crate(d) => list_in_cargo_toml(d, &ours, &paths)?,
+        Target::Crate(d) => list_in_cargo_toml(d, &ours, &paths, &record.libraries)?,
     }
     Ok(Summary {
         modules: resolved
@@ -1376,29 +1412,53 @@ fn list_in_nsh_json(app: &Path, ours: &BTreeSet<&str>, paths: &[&str]) -> anyhow
 }
 
 /// Puts `paths` in `Cargo.toml` `[package.metadata.nsh.android]`
-/// `libraries`, after its entries that are not `ours`, keeping the rest of
-/// the file as it is written.
-fn list_in_cargo_toml(dir: &Path, ours: &BTreeSet<&str>, paths: &[&str]) -> anyhow::Result<()> {
+/// `libraries`, after its entries that are not `ours`, and `wanted` in
+/// `[package.metadata.nsh-native-deps]` `android`, keeping the rest of the
+/// file as it is written.
+fn list_in_cargo_toml(
+    dir: &Path,
+    ours: &BTreeSet<&str>,
+    paths: &[&str],
+    wanted: &[String],
+) -> anyhow::Result<()> {
     use toml_edit::{Array, DocumentMut, Item, Table, value};
+    /// The table at `keys` below `[package]`, made when there is none.
+    fn table_at<'a>(
+        doc: &'a mut DocumentMut,
+        keys: &[&str],
+        path: &Path,
+    ) -> anyhow::Result<&'a mut Table> {
+        let mut table: &mut Table = doc
+            .get_mut("package")
+            .and_then(Item::as_table_mut)
+            .with_context(|| format!("{} has no [package]: name a crate", path.display()))?;
+        for key in keys {
+            let entry = table.entry(key).or_insert_with(|| {
+                let mut t = Table::new();
+                t.set_implicit(true);
+                Item::Table(t)
+            });
+            table = entry
+                .as_table_mut()
+                .with_context(|| format!("{}: `{key}` is not a table", path.display()))?;
+        }
+        Ok(table)
+    }
+    /// One entry on each line.
+    fn lines(mut list: Array) -> Item {
+        for v in list.iter_mut() {
+            v.decor_mut().set_prefix("\n    ");
+        }
+        list.set_trailing("\n");
+        list.set_trailing_comma(true);
+        value(list)
+    }
     let path = dir.join("Cargo.toml");
     let text = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
     let mut doc: DocumentMut = text
         .parse()
         .with_context(|| format!("{} is not TOML", path.display()))?;
-    let mut table: &mut Table = doc
-        .get_mut("package")
-        .and_then(Item::as_table_mut)
-        .with_context(|| format!("{} has no [package]: name a crate", path.display()))?;
-    for key in ["metadata", "nsh", "android"] {
-        let entry = table.entry(key).or_insert_with(|| {
-            let mut t = Table::new();
-            t.set_implicit(true);
-            Item::Table(t)
-        });
-        table = entry
-            .as_table_mut()
-            .with_context(|| format!("{}: `{key}` is not a table", path.display()))?;
-    }
+    let table = table_at(&mut doc, &["metadata", "nsh", "android"], &path)?;
     let mut libraries = Array::new();
     match table.get("libraries") {
         None => {}
@@ -1422,12 +1482,16 @@ fn list_in_cargo_toml(dir: &Path, ours: &BTreeSet<&str>, paths: &[&str]) -> anyh
     if libraries.is_empty() {
         table.remove("libraries");
     } else {
-        for v in libraries.iter_mut() {
-            v.decor_mut().set_prefix("\n    ");
-        }
-        libraries.set_trailing("\n");
-        libraries.set_trailing_comma(true);
-        table.insert("libraries", value(libraries));
+        table.insert("libraries", lines(libraries));
+    }
+    let table = table_at(&mut doc, &["metadata", METADATA_KEY], &path)?;
+    if wanted.is_empty() {
+        table.remove(ANDROID_KEY);
+    } else {
+        table.insert(
+            ANDROID_KEY,
+            lines(wanted.iter().map(String::as_str).collect()),
+        );
     }
     fs::write(&path, doc.to_string())?;
     Ok(())
@@ -1825,7 +1889,7 @@ pub mod tests {
 
     #[test]
     fn vendoring_writes_the_files_the_record_and_nsh_json() {
-        let app = std::env::temp_dir().join(format!("nsh-maven-app-{}", std::process::id()));
+        let app = std::env::temp_dir().join(format!("nsh-native-deps-app-{}", std::process::id()));
         let _ = fs::remove_dir_all(&app);
         fs::create_dir_all(&app).unwrap();
         fs::write(
@@ -1919,7 +1983,8 @@ pub mod tests {
 
     #[test]
     fn vendoring_into_a_crate_edits_its_cargo_toml_in_place() {
-        let dir = std::env::temp_dir().join(format!("nsh-maven-crate-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("nsh-native-deps-crate-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let manifest = "[package]\nname = \"scanner\" # the crate\nversion = \"0.1.0\"\n\n[package.metadata.nsh.android]\npermissions = [\"CAMERA\"]\nlibraries = [\"android/glue.jar\"]\n\n[dependencies]\nanyhow = \"1\"\n";
@@ -1952,11 +2017,37 @@ pub mod tests {
         assert!(text.contains("name = \"scanner\" # the crate"), "{text}");
         assert!(text.contains("permissions = [\"CAMERA\"]"), "{text}");
         assert!(text.contains("[dependencies]\nanyhow = \"1\""), "{text}");
+        // The libraries asked for are listed with the other platforms'.
+        let table = &doc["package"]["metadata"]["nsh-native-deps"];
+        assert_eq!(table["android"][0].as_str(), Some("app:a:1"), "{text}");
+        // A list edited by hand is what the next run takes.
+        let record = target.record().unwrap();
+        let edited = text.replace("\"app:a:1\"", "\"lib:x:1\"").replace(
+            "[package.metadata.nsh-native-deps]\n",
+            "[package.metadata.nsh-native-deps]\nios = [\"S.xcframework\"]\n",
+        );
+        fs::write(dir.join("Cargo.toml"), edited).unwrap();
+        let wanted = target.wanted(&record).unwrap();
+        assert_eq!(wanted, [coordinate("lib:x:1")]);
+        vendor(&target, &mut repo, &wanted, Vec::new()).unwrap();
+        let text = fs::read_to_string(dir.join("Cargo.toml")).unwrap();
+        assert!(
+            text.contains("android/maven/lib/x-1.jar") && !text.contains("a-1.aar"),
+            "{text}"
+        );
+        // Without the list, the record's libraries are.
+        fs::write(dir.join("Cargo.toml"), manifest).unwrap();
+        assert_eq!(target.wanted(&record).unwrap(), [coordinate("app:a:1")]);
+        fs::write(dir.join("Cargo.toml"), &text).unwrap();
         // Removing every library leaves only the crate's own entry.
         vendor(&target, &mut repo, &[], Vec::new()).unwrap();
         let text = fs::read_to_string(dir.join("Cargo.toml")).unwrap();
         assert!(
             text.contains("android/glue.jar") && !text.contains("android/maven/"),
+            "{text}"
+        );
+        assert!(
+            !text.contains("lib:x:1") && text.contains("ios = [\"S.xcframework\"]"),
             "{text}"
         );
         assert!(!dir.join("android/maven/app").exists());

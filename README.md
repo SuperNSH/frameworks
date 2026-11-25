@@ -1,14 +1,26 @@
 # nsh-native-deps
 
-> **Moved.** This crate is now [`nsh-native-deps`](https://crates.io/crates/nsh-native-deps), which also covers Android. It gets no more releases here. To switch: depend on `nsh-native-deps`, call `nsh_native_deps::link_declared()`, rename the table to `[package.metadata.nsh-native-deps]`, and run `nsh-native-deps` in place of `nsh-native-deps`. Source: https://github.com/SuperNSH/native-deps
+The native dependencies of Native Shell (NSH) apps, from one list: Apple frameworks (`.xcframework`, `.framework`) on iOS and macOS, libraries (`.so`, `.a`, `.dll`, `.lib`) on Linux and Windows, and Maven libraries (`.aar`, `.jar`) on Android.
 
-Prebuilt native SDKs for Native Shell (NSH) apps, linked from an nshm crate and carried in the app's packages: Apple frameworks (`.xcframework`, `.framework`) on iOS and macOS, libraries (`.so`, `.a`, `.dll`, `.lib`) on Linux and Windows.
+```toml
+[package.metadata.nsh-native-deps]
+ios = ["apple/Scanner.xcframework"]
+macos = ["apple/Scanner.xcframework"]
+linux = ["vendor/linux/{arch}/libscanner.so"]
+windows = ["vendor/windows/{arch}/scanner.lib", "vendor/windows/{arch}/scanner.dll"]
+android = ["com.google.mlkit:text-recognition:16.0.1"]
+```
 
-NSH links what a crate's build script asks for, so an nshm that wraps an SDK links it from its own `build.rs` ([NSH's guide](https://github.com/longbridge/nsh/blob/main/website/docs/nshm.md)). `nsh-native-deps` does that from one list in the crate's `Cargo.toml`, picking each target's library. After `nsh package` it copies the SDK's dynamic libraries into the package (and signs them, on Apple's platforms), which a build script cannot do. NSH itself is unchanged.
+- **iOS, macOS, Linux, Windows**: NSH links what a crate's build script asks for, so an nshm that wraps an SDK links it from its own `build.rs` ([NSH's guide](https://github.com/longbridge/nsh/blob/main/website/docs/nshm.md)). `nsh-native-deps` does that from the list, picking each target's library. After `nsh package` it copies the SDK's dynamic libraries into the package (and signs them, on Apple's platforms), which a build script cannot do.
+- **Android**: NSH packages the library files it is given and resolves no Maven dependencies. `nsh-native-deps android` resolves a library and everything it depends on as Gradle does, downloads the files, and lists them where NSH reads them.
+
+NSH itself is unchanged, and `nsh package` and `nsh run` stay offline.
+
+This crate replaces `nsh-frameworks` and `nsh-maven`: see [Moving](#moving).
 
 ## Status
 
-Usable. Checked on an Apple silicon Mac with NSH `main`, through an nshm that links a static Objective-C library (with a category, so `wholeArchive`) and a dynamic, versioned framework from XCFrameworks:
+Usable. Frameworks and libraries were checked, before the rename, on an Apple silicon Mac with NSH `main`, through an nshm that links a static Objective-C library (with a category, so `wholeArchive`) and a dynamic, versioned framework from XCFrameworks:
 
 - `nsh package --target macos`, then `nsh-native-deps embed`: the app runs and calls both libraries, the category is linked, the framework sits in `Contents/Frameworks` with its links and without the download's quarantine, and `codesign --verify --deep --strict` passes. Without `embed` the app stops at launch (`Library not loaded`).
 - `nsh package --target ios-simulator`, then `nsh-native-deps embed`: the app runs the same in the iOS simulator.
@@ -17,6 +29,14 @@ Usable. Checked on an Apple silicon Mac with NSH `main`, through an nshm that li
 - Static frameworks, archives not named `lib<name>.a`, and `wholeArchive` (a member nothing calls still runs its constructor) were linked in a plain Cargo workspace.
 
 - Linux and Windows (CI, `e2e/run.sh`): a shared and a static C library linked into a Cargo app through `link_declared`, placed in a package directory laid out as `nsh package` writes; the app fails to start before `embed` and runs after it, the `.tar.gz` / `.zip` holds the library, and it runs where Cargo built it with `env`. Not yet with an `nsh package` of a real NSH app on Linux or Windows.
+
+Android: the resolver was checked offline against Gradle 9.3.1 with the Android Gradle plugin 9.1.0, through a `file://` mirror of a local Gradle cache:
+
+- Whole graphs: `androidx.core:core-ktx:1.19.0` (26 modules), `kotlinx-coroutines-android:1.10.2` (6) and `okhttp:4.12.1` (8) resolve to exactly Gradle's module set.
+- Module by module: in a Firebase Firestore, Crashlytics, Analytics and Play services auth graph, 139 of 142 modules' dependencies and constraints match Gradle's tree. The 3 that differ are edges Gradle hides under exclusions, and one module Gradle could not fetch offline.
+- A vendored closure (`lifecycle-process`, `coroutines-android`, `okhttp`: 19 files) was packaged with NSH and ran on an Android emulator.
+
+Against the live Google Maven repository and Maven Central, `androidx.core:core-ktx:1.15.0`, `okhttp:4.12.0` and `com.google.mlkit:text-recognition:16.0.1` resolved and downloaded together (70 modules, 65 files, every checksum checked). That set was not packaged or compared with Gradle's.
 
 Not yet checked: device packages signed with an identity, `.ipa` files, `nsh run --target ios-simulator` (`SIMCTL_CHILD_…`), Intel Macs, Mac Catalyst.
 
@@ -42,7 +62,7 @@ ios = ["apple/Scanner.xcframework"]
 macos = ["apple/Scanner.xcframework", { path = "apple/Ads.xcframework", wholeArchive = true }]
 
 [build-dependencies]
-nsh-native-deps = { version = "0.1", default-features = false }
+nsh-native-deps = { version = "0.2", default-features = false }
 ```
 
 and link them from `build.rs`:
@@ -92,6 +112,42 @@ windows = ["vendor/windows/{arch}/scanner.lib", "vendor/windows/{arch}/scanner.d
 
 `nsh_native_deps::link(path, whole_archive)` links one framework from a build script that chooses itself; `embed` finds only those the `Cargo.toml` table lists.
 
+### Android
+
+In an app, at or below the directory that holds `nsh.json`:
+
+```sh
+nsh-native-deps android add com.google.mlkit:text-recognition:16.0.1   # add a library, or change its version
+nsh-native-deps android remove com.google.mlkit:text-recognition       # remove one, with what only it needed
+nsh-native-deps android sync                                           # resolve and download again
+nsh-native-deps android list                                           # what was added, and the files
+```
+
+In an nshm crate, add `--crate`: the files go to the crate's `android/maven/` and its `Cargo.toml` `[package.metadata.nsh.android] libraries`. NSH then adds them to every app that links the crate. The rest of `Cargo.toml` stays as written.
+
+`--repository <URL>` (repeatable, `https://` or `file://`) searches other repositories, in order, instead of Google's Maven repository and Maven Central. Later runs keep them. `--dir <PATH>` picks the app or crate.
+
+A crate's libraries are also listed in `[package.metadata.nsh-native-deps] android`: `sync` takes the list as it is there, so it can be edited by hand. An app's are kept in `android/maven/maven.json`.
+
+Every run resolves the whole set again from the libraries named, and replaces exactly the files and entries the previous run added. Entries of your own stay first. `android/maven/maven.json` records the libraries, the repositories and each file's SHA-256: commit it with the files, or commit it alone and run `nsh-native-deps android sync` to download them.
+
+## How Android libraries resolve
+
+- **Gradle module metadata** (`.module`), where the POM says it was published with it:
+  - the variant an Android app runs: `java-runtime`, Android before plain JVM, release before debug, and an attribute the variant leaves out counts as a match;
+  - `available-at`, so Kotlin Multiplatform roots lead to their `-jvm` or `-android` module;
+  - dependencies, and a dependency with no version takes its constraint's;
+  - constraints, and platform dependencies whose BOM constrains the graph;
+  - each file's SHA-256.
+- **Otherwise the POM**:
+  - parents and properties;
+  - `dependencyManagement` with imported BOMs, which also become constraints when the module is asked for as a platform;
+  - `compile` and `runtime` dependencies that are not optional;
+  - exclusions: a module stays when any path to it does not exclude it;
+  - exact (`[24.0.0]`) and listed (`maven-metadata.xml`) version ranges.
+- **One version per module**, the highest the graph asks for; a constraint raises a module only if the graph has it. The graph is walked again until the versions settle, so what an evicted version asked for does not count. An evicted version whose metadata a repository no longer has does not matter. An error names the library that pulled the failing one in.
+- **Downloads** are checked against the module metadata's SHA-256, or the repository's `.sha256`/`.sha1`. A file with none to check against is reported. Files go through a staging directory, so a failed run changes nothing.
+
 ## Limits
 
 - System frameworks need none of this: link them as usual (`objc2` crates, or `cargo:rustc-link-lib=framework=StoreKit`).
@@ -100,16 +156,37 @@ windows = ["vendor/windows/{arch}/scanner.lib", "vendor/windows/{arch}/scanner.d
 - Run `embed` again after each `nsh package`, which writes a new package. An app that updates itself (`updater`) publishes the archive `nsh package` copied for the update feed: copy the one `embed` made over it.
 - List a static library in one crate only: each crate that lists it carries a copy.
 
+Android:
+
+- No Gradle plugins: put the values `google-services.json` makes in the app's `android/res/values`.
+- No dependency substitution rules or capability conflicts, which a build script would settle (guava against `listenablefuture`).
+- No POM relocations, and no `rejects` or `strictly` beyond taking the version.
+- `kotlin-stdlib-jdk7` and `-jdk8` that older Kotlin libraries ask for are kept, where the Kotlin Gradle plugin may drop them. Since Kotlin 1.8 they hold no classes an app runs.
+
+## Moving
+
+From `nsh-frameworks`:
+
+- depend on `nsh-native-deps`, and call `nsh_native_deps::link_declared()` in `build.rs`;
+- rename `[package.metadata.nsh-frameworks]` to `[package.metadata.nsh-native-deps]`;
+- run `nsh-native-deps` in place of `nsh-frameworks`. The commands are the same.
+
+From `nsh-maven`:
+
+- run `nsh-native-deps android add`, `remove`, `sync` and `list` in place of `nsh-maven add` and so on;
+- the library is `nsh_native_deps::maven`. `android/maven/` and `maven.json` stay as they are.
+
 ## Layout
 
 - `crates/nsh-native-deps/src/lib.rs`: targets, XCFramework libraries, the build script directives, the `Cargo.toml` table.
 - `crates/nsh-native-deps/src/desktop.rs`: Linux and Windows libraries.
-- `crates/nsh-native-deps/src/embed.rs`, `main.rs`: the `nsh-native-deps` command.
+- `crates/nsh-native-deps/src/maven.rs`: the Android resolver, the vendoring and their tests.
+- `crates/nsh-native-deps/src/embed.rs`, `android.rs`, `main.rs`: the `nsh-native-deps` command.
 - `crates/nsh-native-deps/src/tests.rs`: the library's tests.
 
 ## Checks
 
-CI (`.github/workflows/ci.yml`) runs `cargo fmt --all -- --check`, then Clippy (`-D warnings`) and the tests on Linux, macOS and Windows, and `e2e/run.sh` on Linux and Windows. The unit tests build XCFrameworks in temporary directories; none runs Xcode's tools.
+CI (`.github/workflows/ci.yml`) runs `cargo fmt --all -- --check`, then Clippy (`-D warnings`) and the tests on Linux, macOS and Windows, and `e2e/run.sh` on Linux and Windows. The unit tests build XCFrameworks in temporary directories; none runs Xcode's tools. The Android tests resolve against repositories in memory; none reaches the network.
 
 ## Licence
 

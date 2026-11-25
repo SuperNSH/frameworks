@@ -1,10 +1,7 @@
-//! **Moved to [`nsh-native-deps`](https://crates.io/crates/nsh-native-deps)**, which gets the
-//! releases from now on.
-//!
 //! Prebuilt native SDKs for Native Shell (NSH) apps, linked from an nshm
 //! crate's build script and carried in app packages: Apple frameworks
 //! (`.xcframework`, `.framework`) on iOS and macOS, libraries on Linux and
-//! Windows ([`desktop`]).
+//! Windows ([`desktop`]), Maven libraries on Android (the `maven` module).
 //!
 //! A crate lists them once, in its `Cargo.toml`, relative to the crate:
 //!
@@ -14,6 +11,7 @@
 //! macos = ["apple/Scanner.xcframework", { path = "apple/Ads.xcframework", wholeArchive = true }]
 //! linux = ["vendor/linux/{arch}/libscanner.so"]
 //! windows = ["vendor/windows/{arch}/scanner.lib", "vendor/windows/{arch}/scanner.dll"]
+//! android = ["com.example:scanner:1.2.0"]
 //! ```
 //!
 //! and links them from its `build.rs` ([`link_declared`]):
@@ -28,7 +26,9 @@
 //! on to the final link of every executable that depends on the crate, the
 //! app's included. `ios` is for iOS devices, the simulator and Mac Catalyst,
 //! `macos` for macOS; other targets link nothing, so the crate still builds
-//! everywhere. Each build takes the XCFramework library of its target
+//! everywhere. `android` links nothing: the `nsh-native-deps android` command
+//! downloads those libraries and lists them where NSH packages them. Each
+//! build takes the XCFramework library of its target
 //! ([`Framework::library`]).
 //!
 //! A static library becomes part of the executable. A dynamic framework,
@@ -48,9 +48,15 @@ use std::{
 use anyhow::{Context as _, bail};
 
 pub mod desktop;
+#[cfg(feature = "maven")]
+pub mod maven;
 
 /// The table of a crate's `Cargo.toml` this crate reads.
 pub const METADATA_KEY: &str = "nsh-native-deps";
+
+/// The key of that table which lists Maven libraries, for the
+/// `nsh-native-deps android` command; nothing is linked from it.
+pub const ANDROID_KEY: &str = "android";
 
 /// An Apple target, as XCFrameworks name it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -483,10 +489,10 @@ pub fn frameworks_of(
         bail!("{at} is a table");
     };
     for (key, _) in table {
-        if !Platform::ALL.iter().any(|p| p.key() == key) {
+        if key != ANDROID_KEY && !Platform::ALL.iter().any(|p| p.key() == key) {
             bail!(
                 "{at}: `{key}` is not something nsh-native-deps reads (`ios`, `macos`, `linux`, \
-                 `windows`)"
+                 `windows`, `android`)"
             );
         }
     }

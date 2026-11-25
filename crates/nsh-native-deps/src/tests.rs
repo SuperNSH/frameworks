@@ -393,6 +393,15 @@ macos = ["apple/Scanner.xcframework", { path = "apple/Ads.xcframework", wholeArc
         let error = format!("{:#}", declared(&manifest, Platform::Ios, "x").unwrap_err());
         assert!(error.contains(wrong), "{table}: {error}");
     }
+    // Android's libraries are the command's: no platform links them.
+    fs::write(
+        &manifest,
+        "[package]\nname = \"x\"\n[package.metadata.nsh-native-deps]\nandroid = [\"a:b:1\"]\n",
+    )
+    .unwrap();
+    for platform in Platform::ALL {
+        assert!(declared(&manifest, platform, "x").unwrap().is_empty());
+    }
     // A crate without the table declares none.
     fs::write(&manifest, "[package]\nname = \"x\"\n").unwrap();
     assert!(declared(&manifest, Platform::Ios, "x").unwrap().is_empty());

@@ -1,20 +1,22 @@
 [package]
 name = "nsh-native-deps"
-description = "Moved to nsh-native-deps. Links prebuilt native SDKs into Native Shell (NSH) apps"
+description = "Native dependencies of Native Shell (NSH) apps: links and packages XCFrameworks, .so and .dll files, and vendors Android libraries from Maven"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-keywords = ["nsh", "nshm", "xcframework", "ios", "macos"]
+keywords = ["nsh", "nshm", "xcframework", "android", "maven"]
 readme = "../../README.md"
 categories = ["command-line-utilities", "development-tools::build-utils"]
 
 [features]
 # The `nsh-native-deps` command. A build script depends on the library alone:
-# `nsh-native-deps = { git = "...", default-features = false }`.
+# `nsh-native-deps = { version = "0.2", default-features = false }`.
 default = ["cli"]
-cli = ["dep:clap", "dep:serde_json"]
+cli = ["maven", "dep:clap"]
+# The Android resolver (`nsh_native_deps::maven`), which the command uses.
+maven = ["dep:quick-xml", "dep:serde", "dep:serde_json", "dep:sha1", "dep:sha2", "dep:toml_edit", "dep:ureq"]
 
 [[bin]]
 name = "nsh-native-deps"
@@ -27,3 +29,9 @@ plist = "1.7"
 toml = "0.8"
 clap = { version = "4.5", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
+quick-xml = { version = "0.42", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+sha1 = { version = "0.11", optional = true }
+sha2 = { version = "0.11", optional = true }
+toml_edit = { version = "0.22", optional = true }
+ureq = { version = "3", optional = true }
