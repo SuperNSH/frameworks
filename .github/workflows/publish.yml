@@ -1,6 +1,6 @@
 name: Publish crates (Manual)
 
-# Publishes nsh-frameworks to crates.io from an existing tag. changelog-release.yml calls it; by hand it recovers
+# Publishes nsh-native-deps to crates.io from an existing tag. changelog-release.yml calls it; by hand it recovers
 # a version that failed halfway: a rerun uploads only what crates.io does not have.
 
 on:

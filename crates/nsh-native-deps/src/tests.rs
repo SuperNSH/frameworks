@@ -2,7 +2,7 @@ use super::*;
 
 /// A temporary directory of the test's own.
 fn temp(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("nsh-frameworks-{name}-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("nsh-native-deps-{name}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     dir
@@ -82,7 +82,7 @@ fn listed(path: PathBuf) -> Framework {
     Framework {
         path,
         whole_archive: false,
-        listed: "scanner: [package.metadata.nsh-frameworks] `ios`[0]".into(),
+        listed: "scanner: [package.metadata.nsh-native-deps] `ios`[0]".into(),
     }
 }
 
@@ -348,7 +348,7 @@ fn crates_declare_frameworks_in_their_cargo_toml() {
 [package]
 name = "scanner"
 
-[package.metadata.nsh-frameworks]
+[package.metadata.nsh-native-deps]
 ios = ["apple/Scanner.xcframework"]
 macos = ["apple/Scanner.xcframework", { path = "apple/Ads.xcframework", wholeArchive = true }]
 "#,
@@ -361,12 +361,12 @@ macos = ["apple/Scanner.xcframework", { path = "apple/Ads.xcframework", wholeArc
             Framework {
                 path: dir.join("apple/Scanner.xcframework"),
                 whole_archive: false,
-                listed: "scanner: [package.metadata.nsh-frameworks] `macos`[0]".into(),
+                listed: "scanner: [package.metadata.nsh-native-deps] `macos`[0]".into(),
             },
             Framework {
                 path: dir.join("apple/Ads.xcframework"),
                 whole_archive: true,
-                listed: "scanner: [package.metadata.nsh-frameworks] `macos`[1]".into(),
+                listed: "scanner: [package.metadata.nsh-native-deps] `macos`[1]".into(),
             },
         ]
     );
@@ -387,7 +387,7 @@ macos = ["apple/Scanner.xcframework", { path = "apple/Ads.xcframework", wholeArc
     ] {
         fs::write(
             &manifest,
-            format!("[package]\nname = \"x\"\n[package.metadata.nsh-frameworks]\n{table}\n"),
+            format!("[package]\nname = \"x\"\n[package.metadata.nsh-native-deps]\n{table}\n"),
         )
         .unwrap();
         let error = format!("{:#}", declared(&manifest, Platform::Ios, "x").unwrap_err());
@@ -407,7 +407,7 @@ mod desktop_tests {
         Framework {
             path,
             whole_archive: false,
-            listed: format!("scanner: [package.metadata.nsh-frameworks] `{platform}`[{index}]"),
+            listed: format!("scanner: [package.metadata.nsh-native-deps] `{platform}`[{index}]"),
         }
     }
 
@@ -617,7 +617,7 @@ mod desktop_tests {
         let manifest = dir.join("Cargo.toml");
         fs::write(
             &manifest,
-            "[package]\nname = \"scanner\"\n[package.metadata.nsh-frameworks]\n\
+            "[package]\nname = \"scanner\"\n[package.metadata.nsh-native-deps]\n\
              linux = [\"vendor/linux/{arch}/libscanner.so\"]\n\
              windows = [\"vendor/windows/{arch}/scanner.lib\", \"vendor/windows/{arch}/scanner.dll\"]\n",
         )

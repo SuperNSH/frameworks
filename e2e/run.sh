@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Builds a shared and a static C library, links them into a Cargo app
-# through `nsh_frameworks::link_declared`, puts the app in a package
+# through `nsh_native_deps::link_declared`, puts the app in a package
 # directory laid out as `nsh package` writes Linux and Windows ones, and
-# checks that it runs only after `nsh-frameworks embed`, and from where
-# Cargo built it with `nsh-frameworks env`. Linux and Windows.
+# checks that it runs only after `nsh-native-deps embed`, and from where
+# Cargo built it with `nsh-native-deps env`. Linux and Windows.
 set -euo pipefail
 cd "$(dirname "$0")"
 root=$PWD
-tool="$root/../target/debug/nsh-frameworks"
+tool="$root/../target/debug/nsh-native-deps"
 arch=$(uname -m)
 [ "$arch" = arm64 ] && arch=aarch64
 case "$(uname -s)" in

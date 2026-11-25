@@ -9,7 +9,7 @@
 //! A crate lists them once, in its `Cargo.toml`, relative to the crate:
 //!
 //! ```toml
-//! [package.metadata.nsh-frameworks]
+//! [package.metadata.nsh-native-deps]
 //! ios = ["apple/Scanner.xcframework"]
 //! macos = ["apple/Scanner.xcframework", { path = "apple/Ads.xcframework", wholeArchive = true }]
 //! linux = ["vendor/linux/{arch}/libscanner.so"]
@@ -20,7 +20,7 @@
 //!
 //! ```no_run
 //! fn main() {
-//!     nsh_frameworks::link_declared().unwrap();
+//!     nsh_native_deps::link_declared().unwrap();
 //! }
 //! ```
 //!
@@ -33,8 +33,8 @@
 //!
 //! A static library becomes part of the executable. A dynamic framework,
 //! `.so` or `.dll` is linked against, and the app needs a copy of it at run
-//! time: the `nsh-frameworks embed` command copies it into the package NSH
-//! made ([`embed`](https://github.com/SuperNSH/frameworks#use)).
+//! time: the `nsh-native-deps embed` command copies it into the package NSH
+//! made ([`embed`](https://github.com/SuperNSH/native-deps#use)).
 
 // The example is a build script's `main`, written out as one.
 #![allow(clippy::needless_doctest_main)]
@@ -50,7 +50,7 @@ use anyhow::{Context as _, bail};
 pub mod desktop;
 
 /// The table of a crate's `Cargo.toml` this crate reads.
-pub const METADATA_KEY: &str = "nsh-frameworks";
+pub const METADATA_KEY: &str = "nsh-native-deps";
 
 /// An Apple target, as XCFrameworks name it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,7 +81,7 @@ impl Platform {
         Platform::Windows,
     ];
 
-    /// Its key in `[package.metadata.nsh-frameworks]` (and, for Apple's, in
+    /// Its key in `[package.metadata.nsh-native-deps]` (and, for Apple's, in
     /// an XCFramework's `Info.plist`).
     pub fn key(self) -> &'static str {
         match self {
@@ -445,7 +445,7 @@ fn slice_kind(binary: &Path, offset: u64, kind_at: impl Fn(&[u8]) -> Option<bool
 }
 
 /// The frameworks the crate whose manifest is `manifest` lists for
-/// `platform` in `[package.metadata.nsh-frameworks]`, relative to its
+/// `platform` in `[package.metadata.nsh-native-deps]`, relative to its
 /// directory. `crate_name` names the crate in errors.
 pub fn declared(
     manifest: &Path,
@@ -469,8 +469,8 @@ pub fn declared(
     frameworks_of(&value, dir, platform, crate_name)
 }
 
-/// [`declared`] of a crate's `[package.metadata.nsh-frameworks]` as a JSON
-/// value (`cargo metadata`'s `metadata.nsh-frameworks`), its paths
+/// [`declared`] of a crate's `[package.metadata.nsh-native-deps]` as a JSON
+/// value (`cargo metadata`'s `metadata.nsh-native-deps`), its paths
 /// relative to `dir`.
 pub fn frameworks_of(
     table: &Value,
@@ -485,7 +485,7 @@ pub fn frameworks_of(
     for (key, _) in table {
         if !Platform::ALL.iter().any(|p| p.key() == key) {
             bail!(
-                "{at}: `{key}` is not something nsh-frameworks reads (`ios`, `macos`, `linux`, \
+                "{at}: `{key}` is not something nsh-native-deps reads (`ios`, `macos`, `linux`, \
                  `windows`)"
             );
         }
@@ -515,7 +515,7 @@ pub fn frameworks_of(
                             ("path", Value::Text(p)) => path = Some(p.clone()),
                             ("wholeArchive", Value::Flag(on)) => whole_archive = *on,
                             _ => bail!(
-                                "{listed}: `{key}` is not something nsh-frameworks reads \
+                                "{listed}: `{key}` is not something nsh-native-deps reads \
                                  (`path`, a string; `wholeArchive`, a boolean)"
                             ),
                         }
@@ -598,7 +598,7 @@ pub fn directives(frameworks: &[Framework], target: Target) -> anyhow::Result<Ve
 }
 
 /// Links the frameworks the crate being built lists in its `Cargo.toml`
-/// `[package.metadata.nsh-frameworks]` for the target Cargo builds: call it
+/// `[package.metadata.nsh-native-deps]` for the target Cargo builds: call it
 /// from the crate's `build.rs`. Other targets link nothing.
 pub fn link_declared() -> anyhow::Result<()> {
     let dir = PathBuf::from(
@@ -634,7 +634,7 @@ pub fn directives_for(frameworks: &[Framework], triple: &str) -> anyhow::Result<
 /// Links the framework or library at `path` (relative to the crate) for
 /// the target Cargo builds, if it is one this crate knows: [`link_declared`]
 /// without the `Cargo.toml` list, for a build script that chooses itself.
-/// `nsh-frameworks embed` finds only what a crate declares.
+/// `nsh-native-deps embed` finds only what a crate declares.
 pub fn link(path: impl AsRef<Path>, whole_archive: bool) -> anyhow::Result<()> {
     let triple = std::env::var("TARGET").context("not run by Cargo: no TARGET")?;
     let dir = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap_or_default());

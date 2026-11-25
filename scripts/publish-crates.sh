@@ -7,7 +7,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 # In dependency order.
-CRATES=(nsh-frameworks)
+CRATES=(nsh-native-deps)
 TRIES=${TRIES:-30}
 WAIT=${WAIT:-10}
 # crates.io takes one new crate every ten minutes after the first few.

@@ -3,7 +3,7 @@
 //! libraries the app carries next to its executable.
 //!
 //! ```toml
-//! [package.metadata.nsh-frameworks]
+//! [package.metadata.nsh-native-deps]
 //! linux = ["vendor/linux/{arch}/libscanner.so"]
 //! windows = ["vendor/windows/{arch}/scanner.lib", "vendor/windows/{arch}/scanner.dll"]
 //! ```

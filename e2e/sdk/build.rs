@@ -1,3 +1,3 @@
 fn main() {
-    nsh_frameworks::link_declared().unwrap();
+    nsh_native_deps::link_declared().unwrap();
 }

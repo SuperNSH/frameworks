@@ -1,5 +1,5 @@
 [package]
-name = "nsh-frameworks"
+name = "nsh-native-deps"
 description = "Moved to nsh-native-deps. Links prebuilt native SDKs into Native Shell (NSH) apps"
 version.workspace = true
 edition.workspace = true
@@ -11,13 +11,13 @@ readme = "../../README.md"
 categories = ["command-line-utilities", "development-tools::build-utils"]
 
 [features]
-# The `nsh-frameworks` command. A build script depends on the library alone:
-# `nsh-frameworks = { git = "...", default-features = false }`.
+# The `nsh-native-deps` command. A build script depends on the library alone:
+# `nsh-native-deps = { git = "...", default-features = false }`.
 default = ["cli"]
 cli = ["dep:clap", "dep:serde_json"]
 
 [[bin]]
-name = "nsh-frameworks"
+name = "nsh-native-deps"
 path = "src/main.rs"
 required-features = ["cli"]
 

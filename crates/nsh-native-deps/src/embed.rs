@@ -1,4 +1,4 @@
-//! `nsh-frameworks embed`: the dynamic frameworks the app's crates declare,
+//! `nsh-native-deps embed`: the dynamic frameworks the app's crates declare,
 //! copied into a package NSH made and signed with it.
 
 use std::{
@@ -7,7 +7,7 @@ use std::{
 };
 
 use anyhow::{Context as _, bail};
-use nsh_frameworks::{Framework, Platform, Target, Value};
+use nsh_native_deps::{Framework, Platform, Target, Value};
 
 /// Runs `program` with `args`, failing with its error output.
 pub fn run(program: &str, args: &[&std::ffi::OsStr]) -> anyhow::Result<String> {
@@ -46,7 +46,7 @@ pub fn frameworks_in_metadata(
         .collect();
     let mut frameworks: Vec<Framework> = Vec::new();
     for package in json["packages"].as_array().into_iter().flatten() {
-        let Some(table) = package["metadata"].get(nsh_frameworks::METADATA_KEY) else {
+        let Some(table) = package["metadata"].get(nsh_native_deps::METADATA_KEY) else {
             continue;
         };
         if !package["id"]
@@ -60,7 +60,7 @@ pub fn frameworks_in_metadata(
             .as_str()
             .and_then(|m| Path::new(m).parent())
             .with_context(|| format!("{name}: cargo metadata names no Cargo.toml"))?;
-        for framework in nsh_frameworks::frameworks_of(&value(table), dir, platform, name)? {
+        for framework in nsh_native_deps::frameworks_of(&value(table), dir, platform, name)? {
             if !frameworks.iter().any(|f| f.path == framework.path) {
                 frameworks.push(framework);
             }
@@ -90,7 +90,7 @@ pub fn declared(manifest: &Path, triples: &[String]) -> anyhow::Result<Vec<Frame
         .find_map(|t| Platform::of_triple(t))
         .with_context(|| {
             format!(
-                "{} is not a target nsh-frameworks knows",
+                "{} is not a target nsh-native-deps knows",
                 triples.join(", ")
             )
         })?;
@@ -421,7 +421,7 @@ pub fn embed_ipa(
     frameworks: &[Framework],
     asked: Option<&str>,
 ) -> anyhow::Result<Embedded> {
-    let work = ipa.with_extension("nsh-frameworks");
+    let work = ipa.with_extension("nsh-native-deps");
     if work.exists() {
         std::fs::remove_dir_all(&work)?;
     }
@@ -484,7 +484,7 @@ pub fn desktop_dir(package: &Path) -> PathBuf {
 /// (`<Name>` or `<Name>.exe`) and its target.
 pub fn desktop_executable(
     dir: &Path,
-) -> anyhow::Result<(PathBuf, nsh_frameworks::desktop::DesktopTarget)> {
+) -> anyhow::Result<(PathBuf, nsh_native_deps::desktop::DesktopTarget)> {
     let name = dir
         .file_name()
         .with_context(|| format!("{} names no package", dir.display()))?
@@ -499,7 +499,7 @@ pub fn desktop_executable(
         std::fs::File::open(&candidate)?
             .take(4096)
             .read_to_end(&mut head)?;
-        let target = nsh_frameworks::desktop::executable_target(&head).with_context(|| {
+        let target = nsh_native_deps::desktop::executable_target(&head).with_context(|| {
             format!(
                 "{} is not a Linux or Windows executable for x86_64 or aarch64",
                 candidate.display()
@@ -522,10 +522,10 @@ pub fn desktop_executable(
 pub fn embed_desktop(
     dir: &Path,
     executable: &Path,
-    target: nsh_frameworks::desktop::DesktopTarget,
+    target: nsh_native_deps::desktop::DesktopTarget,
     carried: &[PathBuf],
 ) -> anyhow::Result<EmbeddedDesktop> {
-    use nsh_frameworks::desktop::Os;
+    use nsh_native_deps::desktop::Os;
     let mut done = EmbeddedDesktop::default();
     if carried.is_empty() {
         return Ok(done);
@@ -561,7 +561,7 @@ pub fn embed_desktop(
             "patchelf",
             &["--print-rpath".as_ref(), executable.as_os_str()],
         )
-        .context("nsh-frameworks needs patchelf for Linux packages (apt install patchelf)")?;
+        .context("nsh-native-deps needs patchelf for Linux packages (apt install patchelf)")?;
         if !rpath.split(':').any(|p| p.trim() == "$ORIGIN") {
             let current = rpath.trim();
             let new = if current.is_empty() {
@@ -729,7 +729,7 @@ mod tests {
                 {
                     "id": "scanner 0.1.0", "name": "scanner",
                     "manifest_path": "/work/scanner/Cargo.toml",
-                    "metadata": { "nsh-frameworks": {
+                    "metadata": { "nsh-native-deps": {
                         "macos": ["apple/Scanner.xcframework", { "path": "apple/Ads.xcframework", "wholeArchive": true }],
                         "ios": ["apple/ScannerIos.xcframework"],
                     } },
@@ -737,12 +737,12 @@ mod tests {
                 {
                     "id": "unused 0.1.0", "name": "unused",
                     "manifest_path": "/work/unused/Cargo.toml",
-                    "metadata": { "nsh-frameworks": { "macos": ["Unused.xcframework"] } },
+                    "metadata": { "nsh-native-deps": { "macos": ["Unused.xcframework"] } },
                 },
                 {
                     "id": "other 0.1.0", "name": "other",
                     "manifest_path": "/work/other/Cargo.toml",
-                    "metadata": { "nsh-frameworks": { "macos": ["../scanner/apple/Scanner.xcframework"] } },
+                    "metadata": { "nsh-native-deps": { "macos": ["../scanner/apple/Scanner.xcframework"] } },
                 },
             ],
             "resolve": { "nodes": [{ "id": "scanner 0.1.0" }, { "id": "other 0.1.0" }] },
@@ -768,20 +768,20 @@ mod tests {
         );
         assert_eq!(
             found[0].listed,
-            "scanner: [package.metadata.nsh-frameworks] `macos`[0]"
+            "scanner: [package.metadata.nsh-native-deps] `macos`[0]"
         );
         let ios = frameworks_in_metadata(&json, Platform::Ios).unwrap();
         assert_eq!(ios.len(), 1);
         let bad = serde_json::json!({
             "packages": [{ "id": "x", "name": "x", "manifest_path": "/x/Cargo.toml",
-                           "metadata": { "nsh-frameworks": { "watchos": [] } } }],
+                           "metadata": { "nsh-native-deps": { "watchos": [] } } }],
             "resolve": { "nodes": [{ "id": "x" }] },
         });
         let error = frameworks_in_metadata(&bad, Platform::Macos)
             .unwrap_err()
             .to_string();
         assert!(
-            error.contains("`watchos` is not something nsh-frameworks reads"),
+            error.contains("`watchos` is not something nsh-native-deps reads"),
             "{error}"
         );
     }
@@ -789,7 +789,7 @@ mod tests {
     #[test]
     fn the_app_is_found_in_the_generated_workspace_first() {
         let dir =
-            std::env::temp_dir().join(format!("nsh-frameworks-manifest-{}", std::process::id()));
+            std::env::temp_dir().join(format!("nsh-native-deps-manifest-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join(".nsh/rust")).unwrap();
         assert!(default_manifest(&dir).is_err());
